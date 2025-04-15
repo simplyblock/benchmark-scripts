@@ -1,4 +1,4 @@
-runtime=60
+runtime=300
 time_based
 ramp_time=60
 numjobs=15
@@ -8,3 +8,4 @@ ioengine=libaio
 iodepth=128
 direct=1
 nowait=0
+filename_format=fio-benchmark-data-$jobnum

@@ -18,7 +18,8 @@ function run_fio() {
 
   for ((n=0;n<$loops;n++)); do
     echo "Running workload ${workload} loop #$((n+1))..."
-    fio --output="${worker_dir}"/"${workload}"-${n}.json --output-format=json "${worker_dir}/job.fio"
+
+    fio --output="${worker_dir}/${workload}-${n}.json" --output-format=json "${worker_dir}/job.fio"
   done
 }
 
@@ -41,7 +42,8 @@ function run_single_workload() {
 
   echo "Running benchmark for workload $workload_name..."
   build_workload_jobfile "${workload_file}" "${worker_dir}"
-  run_fio "${worker_dir}" "${loops}"
+  run_fio "${worker_dir}" "${loops}" "${workload_name}"
+  rm -f "${worker_dir}/job.fio"
 }
 
 function run_workloads() {
