@@ -1,0 +1,6 @@
+[fio-10r-90w-seq]
+name=fio-10r-90w-seq
+description=fio Workload with read-write ratio of 10/90 and sequential access pattern
+readwrite=readwrite
+rwmixread=10
+rwmixwrite=90

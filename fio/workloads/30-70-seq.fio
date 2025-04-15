@@ -1,0 +1,6 @@
+[fio-30r-70w-seq]
+name=fio-30r-70w-seq
+description=fio Workload with read-write ratio of 30/70 and sequential access pattern
+readwrite=readwrite
+rwmixread=30
+rwmixwrite=70

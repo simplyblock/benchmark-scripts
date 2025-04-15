@@ -1,0 +1,4 @@
+[fio-0r-100w-seq]
+name=fio-0r-100w-seq
+description=fio Workload with read-write ratio of 0/100 and sequential access pattern
+readwrite=write

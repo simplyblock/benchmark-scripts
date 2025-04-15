@@ -1,0 +1,6 @@
+[fio-10r-90w-rand]
+name=fio-10r-90w-rand
+description=fio Workload with read-write ratio of 10/90 and random access pattern
+readwrite=randrw
+rwmixread=10
+rwmixwrite=90
