@@ -1,0 +1,24 @@
+benchmark:
+  loops: 5
+  blocksizes:
+    - 4K
+    - 16K
+    - 64K
+  workers:
+    - 40
+    - 60
+  iodepths:
+    - 32
+    - 64
+    - 128
+  workloads:
+    - 0-100-rand.fio
+    - 0-100-seq.fio
+    - 100-0-rand.fio
+    - 100-0-seq.fio
+    - 30-70-rand.fio
+    - 30-70-seq.fio
+    - 50-50-rand.fio
+    - 50-50-seq.fio
+    - 70-30-rand.fio
+    - 70-30-seq.fio

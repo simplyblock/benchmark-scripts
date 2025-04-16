@@ -1,11 +1,8 @@
-runtime=300
+runtime=60
 time_based
-ramp_time=60
 numjobs=15
 size=1G
-blocksize=4K
 ioengine=libaio
-iodepth=128
 direct=1
 nowait=0
 filename_format=fio-benchmark-data-$jobnum
