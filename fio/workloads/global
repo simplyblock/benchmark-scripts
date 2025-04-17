@@ -1,6 +1,5 @@
 runtime=60
 time_based
-numjobs=15
 size=1G
 ioengine=libaio
 direct=1
