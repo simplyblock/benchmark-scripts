@@ -1,7 +1,6 @@
 import json
 import sys
 import os
-from multiprocessing.pool import worker
 from pathlib import Path
 
 benchmark_loop_files = {}
@@ -33,9 +32,9 @@ for benchmark_group in benchmark_loop_files.values():
         content = json.loads(Path(file).read_text())
 
         benchmark_name = content['jobs'][1]['jobname']
-        num_jobs = content['jobs'][1]['job options']['numjobs']
-        blocksize = content['jobs'][1]['job options']['bs']
-        iodepth = content['jobs'][1]['job options']['iodepth']
+        num_jobs = content['global options']['numjobs']
+        blocksize = content['global options']['bs']
+        iodepth = content['global options']['iodepth']
 
         num_of_loops = len(content['jobs'])
 
