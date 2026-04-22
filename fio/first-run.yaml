@@ -1,0 +1,13 @@
+benchmark:
+  loops: 4
+  blocksizes:
+    - 4K
+  workers:
+    - 1
+    - 2
+    - 4
+    - 6
+  iodepths:
+    - 1
+  workloads:
+    - 0-100-rand.fio

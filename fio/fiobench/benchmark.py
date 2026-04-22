@@ -23,19 +23,25 @@ class Workload:
 
 
 class Benchmark:
-    def __init__(self, benchmark_file: str, worker_dir: str, workload_dir: str):
+    def __init__(self, benchmark_file: str, worker_dir: str, workload_dir: str, skip_precreation: bool = False):
         self.benchmark_file = benchmark_file
         self.worker_dir = worker_dir
         self.workload_dir = workload_dir
+        self.skip_precreation = skip_precreation
+        override = os.getenv("FIO_PRECREATE_NUMJOBS")
+        self.precreate_numjobs_override = int(override) if override else None
 
     def prepare_fio_files(self, size: str, blocksize: str, worker: int):
         fio_args = [
             "fio",
             f"--blocksize={blocksize}",
             f"--numjobs={worker}",
+            "--ioengine=libaio",
+            "--iodepth=32",
             "--readwrite=write",
             "--direct=1",
             f"--size={size}",
+            f"--directory={self.worker_dir}",
             "--filename_format=fio-benchmark-data-$jobnum",
             "--name=prepare"
         ]
@@ -72,9 +78,20 @@ class Benchmark:
         Path(f"{self.worker_dir}/job.fio").write_text(content)
 
     def run_single_workload(self, loops: int, workload: Workload):
-        print(f"Preparing benchmark data files for workload '{workload.workload_name}' with " +
-              f"iodepth: {workload.io_depth}, workers: {workload.worker}, blocksize: {workload.blocksize}...")
-        self.prepare_fio_files(self.get_data_file_size(), workload.blocksize, workload.worker)
+        if self.skip_precreation:
+            print(
+                f"Skipping precreation for workload '{workload.workload_name}' with "
+                f"iodepth: {workload.io_depth}, workers: {workload.worker}, blocksize: {workload.blocksize}..."
+            )
+        else:
+            precreate_workers = (
+                max(workload.worker, self.precreate_numjobs_override)
+                if self.precreate_numjobs_override
+                else workload.worker
+            )
+            print(f"Preparing benchmark data files for workload '{workload.workload_name}' with " +
+                  f"iodepth: {workload.io_depth}, workers: {precreate_workers}, blocksize: {workload.blocksize}...")
+            self.prepare_fio_files(self.get_data_file_size(), workload.blocksize, precreate_workers)
 
         print(f"Running benchmark for workload '{workload.workload_name}' with " +
               f"iodepth: {workload.io_depth}, workers: {workload.worker}, blocksize: {workload.blocksize}...")

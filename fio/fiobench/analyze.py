@@ -1,6 +1,6 @@
 import json
-import sys
 import os
+import statistics
 from pathlib import Path
 
 
@@ -26,10 +26,16 @@ class Analyzer:
 
         with open(os.path.join(self.benchmark_result_dir, "summary.csv"), "w") as f:
             f.write(
-                "name,blocksize,iodepth,workers,read_iops,write_iops,total_iops,avg_read_throughput,avg_write_throughput\n")
+                "name,blocksize,iodepth,workers,"
+                "avg_read_iops,min_read_iops,max_read_iops,stddev_read_iops,"
+                "avg_write_iops,min_write_iops,max_write_iops,stddev_write_iops,"
+                "avg_total_iops,min_total_iops,max_total_iops,stddev_total_iops,"
+                "avg_read_throughput,avg_write_throughput\n"
+            )
             for benchmark_group in benchmark_loop_files.values():
                 read_iops = []
                 write_iops = []
+                total_iops = []
                 read_throughputs = []
                 write_throughputs = []
 
@@ -60,16 +66,32 @@ class Analyzer:
 
                     read_iops.append(sum(job_read_iops))
                     write_iops.append(sum(job_write_iops))
+                    total_iops.append(sum(job_read_iops) + sum(job_write_iops))
                     read_throughputs.append(sum(job_read_throughputs))
                     write_throughputs.append(sum(job_write_throughputs))
 
                 avg_read_iops = round(sum(read_iops) / len(read_iops), 2)
+                min_read_iops = round(min(read_iops), 2)
+                max_read_iops = round(max(read_iops), 2)
+                stddev_read_iops = round(statistics.pstdev(read_iops), 2)
+
                 avg_write_iops = round(sum(write_iops) / len(write_iops), 2)
-                avg_total_iops = round(avg_write_iops + avg_read_iops, 2)
+                min_write_iops = round(min(write_iops), 2)
+                max_write_iops = round(max(write_iops), 2)
+                stddev_write_iops = round(statistics.pstdev(write_iops), 2)
+
+                avg_total_iops = round(sum(total_iops) / len(total_iops), 2)
+                min_total_iops = round(min(total_iops), 2)
+                max_total_iops = round(max(total_iops), 2)
+                stddev_total_iops = round(statistics.pstdev(total_iops), 2)
+
                 avg_read_throughput = round(sum(read_throughputs) / len(read_throughputs) / 1000 / 1000 * 8, 2)
                 avg_write_throughput = round(sum(write_throughputs) / len(write_throughputs) / 1000 / 1000 * 8, 2)
 
                 f.write(
-                    f"{benchmark_name},{blocksize},{iodepth},{num_jobs},{avg_read_iops},{avg_write_iops},"
-                    f"{avg_total_iops},{avg_read_throughput},{avg_write_throughput}\n"
+                    f"{benchmark_name},{blocksize},{iodepth},{num_jobs},"
+                    f"{avg_read_iops},{min_read_iops},{max_read_iops},{stddev_read_iops},"
+                    f"{avg_write_iops},{min_write_iops},{max_write_iops},{stddev_write_iops},"
+                    f"{avg_total_iops},{min_total_iops},{max_total_iops},{stddev_total_iops},"
+                    f"{avg_read_throughput},{avg_write_throughput}\n"
                 )
