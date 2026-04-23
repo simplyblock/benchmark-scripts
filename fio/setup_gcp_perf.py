@@ -75,10 +75,12 @@ MGMT_MACHINE_TYPE   = "n2-standard-4"
 CLIENT_MACHINE_TYPE = "n2-standard-32"
 ENABLE_TIER1_ON_STORAGE_NODES = True
 ENABLE_TIER1_ON_CLIENT = True
+ENABLE_COMPACT_GROUP_PLACEMENT = True
 
 # Network tag applied to all SB instances — used to scope firewall rules
 CLUSTER_TAG  = "sb-cluster"
 NAME_PREFIX  = "chris-test-sb"
+PLACEMENT_POLICY_NAME = f"{NAME_PREFIX}-compact-placement"
 
 # ---------------------------------------------------------------------------
 # gcloud helpers
@@ -160,6 +162,17 @@ def ensure_firewall_rules():
         "--description", "Allow all traffic between simplyblock cluster nodes",
     ])
 
+def ensure_group_placement_policy():
+    """Idempotently create a compact collocated placement policy."""
+    print(f"  Ensuring compact placement policy: {PLACEMENT_POLICY_NAME}")
+    _gcloud_idempotent([
+        "compute", "resource-policies", "create", "group-placement", PLACEMENT_POLICY_NAME,
+        "--region", REGION,
+        "--collocation", "collocated",
+        "--availability-domain-count", "1",
+        "--description", "Collocated placement for storage and client benchmark nodes",
+    ])
+
 
 # ---------------------------------------------------------------------------
 # Instance launch
@@ -191,7 +204,7 @@ def get_instance(name):
     return None
 
 
-def launch_instance(name, machine_type, local_ssds=0, boot_disk_gb=50, tier1_networking=False):
+def launch_instance(name, machine_type, local_ssds=0, boot_disk_gb=50, tier1_networking=False, resource_policy=None):
     """Create a single GCP instance, or return existing one. Returns parsed instance dict."""
     existing = get_instance(name)
     if existing:
@@ -212,12 +225,14 @@ def launch_instance(name, machine_type, local_ssds=0, boot_disk_gb=50, tier1_net
     ] + _network_flags(tier1_networking) + _local_ssd_flags(local_ssds)
     if tier1_networking:
         cmd += ["--network-performance-configs", "total-egress-bandwidth-tier=TIER_1"]
+    if resource_policy:
+        cmd += ["--resource-policies", resource_policy]
     result = _gcloud(cmd)
     instances = result if isinstance(result, list) else [result]
     return instances[0]
 
 
-def launch_instances_batch(names, machine_type, local_ssds=0, boot_disk_gb=50, tier1_networking=False):
+def launch_instances_batch(names, machine_type, local_ssds=0, boot_disk_gb=50, tier1_networking=False, resource_policy=None):
     """Create multiple GCP instances in one gcloud call, skipping existing ones."""
     to_create = []
     existing = {}
@@ -245,6 +260,8 @@ def launch_instances_batch(names, machine_type, local_ssds=0, boot_disk_gb=50, t
         ] + _network_flags(tier1_networking) + _local_ssd_flags(local_ssds)
         if tier1_networking:
             cmd += ["--network-performance-configs", "total-egress-bandwidth-tier=TIER_1"]
+        if resource_policy:
+            cmd += ["--resource-policies", resource_policy]
         result = _gcloud(cmd)
         created = result if isinstance(result, list) else [result]
         results += created
@@ -423,6 +440,10 @@ def main(data_chunks_per_stripe: int, parity_chunks_per_stripe: int):
     # --- 1. Firewall rules ---
     print("\n[1/7] Ensuring firewall rules...")
     ensure_firewall_rules()
+    if ENABLE_COMPACT_GROUP_PLACEMENT:
+        ensure_group_placement_policy()
+
+    placement_policy = PLACEMENT_POLICY_NAME if ENABLE_COMPACT_GROUP_PLACEMENT else None
 
     # --- 2. Launch instances ---
     print("\n[2/7] Launching instances...")
@@ -437,6 +458,7 @@ def main(data_chunks_per_stripe: int, parity_chunks_per_stripe: int):
         local_ssds=LOCAL_SSD_COUNT,
         boot_disk_gb=50,
         tier1_networking=ENABLE_TIER1_ON_STORAGE_NODES,
+        resource_policy=placement_policy,
     )
 
     client_inst = launch_instance(
@@ -445,6 +467,7 @@ def main(data_chunks_per_stripe: int, parity_chunks_per_stripe: int):
         local_ssds=0,
         boot_disk_gb=50,
         tier1_networking=ENABLE_TIER1_ON_CLIENT,
+        resource_policy=placement_policy,
     )
 
     # --- 3. Extract IPs ---

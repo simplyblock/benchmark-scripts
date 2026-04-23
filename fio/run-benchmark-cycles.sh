@@ -187,6 +187,24 @@ PY
   PRECREATE_WORKERS_MAX="${max_workers}"
 }
 
+get_erasure_profile_from_metadata() {
+  load_cluster_metadata
+  "${PYTHON_BIN}" - "${CLUSTER_METADATA_FILE}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    metadata = json.load(f)
+
+d = metadata.get("data_chunks_per_stripe")
+p = metadata.get("parity_chunks_per_stripe")
+if d is None or p is None:
+    raise SystemExit("missing data_chunks_per_stripe/parity_chunks_per_stripe in cluster metadata")
+
+print(f"{d}+{p}")
+PY
+}
+
 resolve_remote_path() {
   local raw_path="$1"
   if [[ "${raw_path}" == "~" ]]; then
@@ -383,6 +401,9 @@ ensure_client_python_deps() {
   ssh_to_host "${CLIENT_IP}" "python3 -m pip --version >/dev/null 2>&1 || sudo python3 -m ensurepip --upgrade >/dev/null 2>&1 || true"
   ssh_to_host "${CLIENT_IP}" "python3 -m pip install --user --upgrade pip >/dev/null 2>&1 || true"
   ssh_to_host "${CLIENT_IP}" "python3 -m pip install --user PyYAML"
+  ssh_to_host "${CLIENT_IP}" "sudo python3 -m pip --version >/dev/null 2>&1 || sudo python3 -m ensurepip --upgrade >/dev/null 2>&1 || true"
+  ssh_to_host "${CLIENT_IP}" "sudo PIP_ROOT_USER_ACTION=ignore python3 -m pip install --upgrade pip >/dev/null 2>&1 || true"
+  ssh_to_host "${CLIENT_IP}" "sudo PIP_ROOT_USER_ACTION=ignore python3 -m pip install PyYAML"
 }
 
 launch_stage2_in_tmux() {
@@ -480,7 +501,7 @@ cat > /tmp/disable_compression.json <<EOF
 }
 EOF
 docker cp /tmp/disable_compression.json \"\${container_name}:/root/disable_compression.json\"
-docker exec \"\${container_name}\" bash -lc \"/root/spdk/scripts/rpc_sock.py /root/disable_compression.json /mnt/ramdisk/\${container_name}/spdk.lock\"'"
+docker exec \"\${container_name}\" bash -lc \"/root/spdk/ultra/scripts/rpc_sock /root/disable_compression.json /mnt/ramdisk/\${container_name}/spdk.lock\"'"
   done
 }
 
@@ -519,9 +540,9 @@ bring_up_storage_node() {
   storage_node_id="$(get_primary_storage_node_id_for_volume "${volume_id}")"
 
   log "Restarting storage node ${storage_node_id} (force)"
-  run_on_mgmt "sbctl sn restart ${storage_node_id} --force"
+  run_on_mgmt "sbctl sn restart ${storage_node_id}"
 
-  local wait_timeout_sec="${SN_RESTART_WAIT_TIMEOUT_SEC:-300}"
+  local wait_timeout_sec="${SN_RESTART_WAIT_TIMEOUT_SEC:-600}"
   local wait_interval_sec="${SN_RESTART_WAIT_INTERVAL_SEC:-5}"
   local deadline=$((SECONDS + wait_timeout_sec))
   local node_is_online=0
@@ -545,7 +566,7 @@ for node in nodes:
         continue
     uuid = node.get("UUID") or node.get("uuid")
     status = str(node.get("Status") or node.get("status") or "").strip().lower()
-    if uuid == target_id and status == "online":
+    if uuid == target_id and status in ("online", "rebalancing"):
         raise SystemExit(0)
 
 raise SystemExit(1)
@@ -570,12 +591,13 @@ PY
 
 run_single_benchmark_definition() {
   local benchmark_file="$1"
-  local _unused_worker_dir="${2:-}"
+  local worker_dir="$2"
   compute_precreate_workers_max
   local -a fio_run_args=(
     "${PYTHON_BIN}" "./fio.py" run
     --benchmark-file "__BENCHMARK_FILE__"
-    --worker-dir "/media"
+    --worker-dir "__WORKER_DIR__"
+    --data-dir "/media"
     --workload-dir "__WORKLOAD_DIR__"
   )
 
@@ -587,6 +609,8 @@ run_single_benchmark_definition() {
   local benchmark_name
   benchmark_name="$(basename "${benchmark_file}")"
   local remote_benchmark_file="${remote_bench_dir}/${benchmark_name}"
+  local remote_worker_dir
+  remote_worker_dir="${worker_dir}"
 
   if [[ "${PRECREATION_DONE}" -eq 0 ]]; then
     log "Running benchmark definition with precreation: ${benchmark_file}"
@@ -598,21 +622,24 @@ run_single_benchmark_definition() {
   fi
 
   fio_run_args=("${fio_run_args[@]/__BENCHMARK_FILE__/${remote_benchmark_file}}")
+  fio_run_args=("${fio_run_args[@]/__WORKER_DIR__/${remote_worker_dir}}")
   fio_run_args=("${fio_run_args[@]/__WORKLOAD_DIR__/${remote_bench_dir}}")
 
   local remote_cmd
-  printf -v remote_cmd 'cd %q &&' "${remote_bench_dir}"
+  printf -v remote_cmd 'mkdir -p %q && cd %q &&' "${remote_worker_dir}" "${remote_bench_dir}"
   local arg
   for arg in "${fio_run_args[@]}"; do
     printf -v remote_cmd '%s %q' "${remote_cmd}" "${arg}"
   done
+  local benchmark_cmd
+  printf -v benchmark_cmd 'sudo bash -lc %q' "${remote_cmd}"
 
-  log "Executing fio benchmark on client ${CLIENT_IP} from ${remote_bench_dir} (worker-dir=/media)"
+  log "Executing fio benchmark on client ${CLIENT_IP} from ${remote_bench_dir} (worker-dir=${remote_worker_dir}, data-dir=/media)"
   if [[ "${STAGE2_REMOTE}" -eq 1 ]]; then
-    bash -lc "${remote_cmd}"
+    bash -lc "${benchmark_cmd}"
   else
     require_cmd ssh
-    ssh_to_host "${CLIENT_IP}" "${remote_cmd}"
+    ssh_to_host "${CLIENT_IP}" "${benchmark_cmd}"
   fi
 }
 
@@ -672,24 +699,15 @@ prepare_run_config() {
   esac
 }
 
-run_full_matrix() {
+run_for_current_cluster() {
   local timestamp
   timestamp="$(date '+%Y%m%d-%H%M%S')"
 
-  local matrix=(
-    "1+1 off"
-    "1+1 on"
-    "2+2 off"
-    "2+2 on"
-  )
+  local ec_profile
+  ec_profile="$(get_erasure_profile_from_metadata)"
 
-  local item
-  for item in "${matrix[@]}"; do
-    # shellcheck disable=SC2086
-    set -- ${item}
-    local ec_profile="$1"
-    local compression="$2"
-
+  local compression
+  for compression in on off; do
     local run_name="ec-${ec_profile//+/p}-compression-${compression}"
     local run_dir="${RESULTS_BASE_DIR}/${timestamp}/${run_name}"
 
@@ -737,7 +755,7 @@ main() {
   fi
 
   mkdir -p "${RESULTS_BASE_DIR}"
-  run_full_matrix
+  run_for_current_cluster
   log "All benchmark cycles completed."
 }
 
