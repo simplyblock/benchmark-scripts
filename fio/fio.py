@@ -21,7 +21,8 @@ if __name__ == "__main__":
     benchmark_parser = command_parser.add_parser("run", help="Run a benchmark definition")
     benchmark_parser.add_argument("--benchmark-file", "-b", required=True, type=str, dest="benchmark_file")
     benchmark_parser.add_argument("--worker-dir", "-w", required=True, type=str, dest="worker_dir")
-    benchmark_parser.add_argument("--workload-dir" "-wl", required=False, type=str, dest="workload_dir")
+    benchmark_parser.add_argument("--data-dir", "-d", required=False, type=str, dest="data_dir")
+    benchmark_parser.add_argument("--workload-dir", "-wl", required=False, type=str, dest="workload_dir")
     benchmark_parser.add_argument(
         "--skip-precreation",
         action="store_true",
@@ -36,11 +37,13 @@ if __name__ == "__main__":
 
     if namespace.command == "run":
         worker_dir = namespace.worker_dir
+        data_dir = namespace.data_dir if namespace.data_dir else worker_dir
         benchmark_file = namespace.benchmark_file
         workload_dir = namespace.workload_dir if namespace.workload_dir else script_path
         benchmark = Benchmark(
             benchmark_file,
             worker_dir,
+            data_dir,
             workload_dir,
             skip_precreation=namespace.skip_precreation,
         )

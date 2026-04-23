@@ -23,9 +23,10 @@ class Workload:
 
 
 class Benchmark:
-    def __init__(self, benchmark_file: str, worker_dir: str, workload_dir: str, skip_precreation: bool = False):
+    def __init__(self, benchmark_file: str, worker_dir: str, data_dir: str, workload_dir: str, skip_precreation: bool = False):
         self.benchmark_file = benchmark_file
         self.worker_dir = worker_dir
+        self.data_dir = data_dir
         self.workload_dir = workload_dir
         self.skip_precreation = skip_precreation
         override = os.getenv("FIO_PRECREATE_NUMJOBS")
@@ -41,7 +42,7 @@ class Benchmark:
             "--readwrite=write",
             "--direct=1",
             f"--size={size}",
-            f"--directory={self.worker_dir}",
+            f"--directory={self.data_dir}",
             "--filename_format=fio-benchmark-data-$jobnum",
             "--name=prepare"
         ]
@@ -75,6 +76,8 @@ class Benchmark:
     def build_job_file(self, workload_file: str):
         content = Path(workload_file).read_text()
         content += Path(f"{self.workload_dir}/workloads/global").read_text()
+        # Force fio data files into the configured data directory.
+        content += f"\ndirectory={self.data_dir}\n"
         Path(f"{self.worker_dir}/job.fio").write_text(content)
 
     def run_single_workload(self, loops: int, workload: Workload):
