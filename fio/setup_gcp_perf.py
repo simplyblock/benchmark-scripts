@@ -70,9 +70,11 @@ PARITY_CHUNKS_PER_STRIPE = 1
 
 SN_COUNT        = 5
 LOCAL_SSD_COUNT = 0                           # Bundled in machine type (c3d-standard-8-lssd = 1 × 375 GB)
-SN_MACHINE_TYPE     = "c3d-standard-8-lssd"  # C3D with 1 bundled NVMe local SSD (375 GB per node)
+SN_MACHINE_TYPE     = "c3d-standard-30-lssd"  # C3D with 1 bundled NVMe local SSD (375 GB per node)
 MGMT_MACHINE_TYPE   = "n2-standard-4"
-CLIENT_MACHINE_TYPE = "n2-standard-8"
+CLIENT_MACHINE_TYPE = "n2-standard-32"
+ENABLE_TIER1_ON_STORAGE_NODES = True
+ENABLE_TIER1_ON_CLIENT = True
 
 # Network tag applied to all SB instances — used to scope firewall rules
 CLUSTER_TAG  = "sb-cluster"
@@ -171,6 +173,13 @@ def _local_ssd_flags(count):
     return flags
 
 
+def _network_flags(tier1_networking=False):
+    """Return network flags, enforcing gVNIC when tier1 networking is requested."""
+    if tier1_networking:
+        return ["--network-interface", f"subnet={SUBNET},nic-type=GVNIC"]
+    return ["--subnet", SUBNET]
+
+
 def get_instance(name):
     """Return existing instance dict or None if not found."""
     result = _gcloud([
@@ -182,7 +191,7 @@ def get_instance(name):
     return None
 
 
-def launch_instance(name, machine_type, local_ssds=0, boot_disk_gb=50):
+def launch_instance(name, machine_type, local_ssds=0, boot_disk_gb=50, tier1_networking=False):
     """Create a single GCP instance, or return existing one. Returns parsed instance dict."""
     existing = get_instance(name)
     if existing:
@@ -193,7 +202,6 @@ def launch_instance(name, machine_type, local_ssds=0, boot_disk_gb=50):
         "compute", "instances", "create", name,
         "--zone", ZONE,
         "--machine-type", machine_type,
-        "--subnet", SUBNET,
         "--image-project", IMAGE_PROJECT,
         "--image-family", IMAGE_FAMILY,
         "--boot-disk-size", f"{boot_disk_gb}GB",
@@ -201,13 +209,15 @@ def launch_instance(name, machine_type, local_ssds=0, boot_disk_gb=50):
         "--tags", CLUSTER_TAG,
         "--metadata", _ssh_key_metadata(),
         "--format=json",
-    ] + _local_ssd_flags(local_ssds)
+    ] + _network_flags(tier1_networking) + _local_ssd_flags(local_ssds)
+    if tier1_networking:
+        cmd += ["--network-performance-configs", "total-egress-bandwidth-tier=TIER_1"]
     result = _gcloud(cmd)
     instances = result if isinstance(result, list) else [result]
     return instances[0]
 
 
-def launch_instances_batch(names, machine_type, local_ssds=0, boot_disk_gb=50):
+def launch_instances_batch(names, machine_type, local_ssds=0, boot_disk_gb=50, tier1_networking=False):
     """Create multiple GCP instances in one gcloud call, skipping existing ones."""
     to_create = []
     existing = {}
@@ -225,7 +235,6 @@ def launch_instances_batch(names, machine_type, local_ssds=0, boot_disk_gb=50):
             "compute", "instances", "create", *to_create,
             "--zone", ZONE,
             "--machine-type", machine_type,
-            "--subnet", SUBNET,
             "--image-project", IMAGE_PROJECT,
             "--image-family", IMAGE_FAMILY,
             "--boot-disk-size", f"{boot_disk_gb}GB",
@@ -233,7 +242,9 @@ def launch_instances_batch(names, machine_type, local_ssds=0, boot_disk_gb=50):
             "--tags", CLUSTER_TAG,
             "--metadata", _ssh_key_metadata(),
             "--format=json",
-        ] + _local_ssd_flags(local_ssds)
+        ] + _network_flags(tier1_networking) + _local_ssd_flags(local_ssds)
+        if tier1_networking:
+            cmd += ["--network-performance-configs", "total-egress-bandwidth-tier=TIER_1"]
         result = _gcloud(cmd)
         created = result if isinstance(result, list) else [result]
         results += created
@@ -421,10 +432,20 @@ def main(data_chunks_per_stripe: int, parity_chunks_per_stripe: int):
 
     sn_names = [f"{NAME_PREFIX}-sn-{i}" for i in range(SN_COUNT)]
     sn_insts = launch_instances_batch(
-        sn_names, SN_MACHINE_TYPE, local_ssds=LOCAL_SSD_COUNT, boot_disk_gb=50)
+        sn_names,
+        SN_MACHINE_TYPE,
+        local_ssds=LOCAL_SSD_COUNT,
+        boot_disk_gb=50,
+        tier1_networking=ENABLE_TIER1_ON_STORAGE_NODES,
+    )
 
     client_inst = launch_instance(
-        f"{NAME_PREFIX}-client", CLIENT_MACHINE_TYPE, local_ssds=0, boot_disk_gb=50)
+        f"{NAME_PREFIX}-client",
+        CLIENT_MACHINE_TYPE,
+        local_ssds=0,
+        boot_disk_gb=50,
+        tier1_networking=ENABLE_TIER1_ON_CLIENT,
+    )
 
     # --- 3. Extract IPs ---
     print("\n[3/7] Collecting instance IPs...")
@@ -528,7 +549,7 @@ def main(data_chunks_per_stripe: int, parity_chunks_per_stripe: int):
             try:
                 ssh_exec(mgmt_pub_ip, [
                     f"sudo /usr/local/bin/sbctl -d sn add-node"
-                    f" {cluster_uuid} {priv_ip}:5000 {IFACE} --ha-jm-count 3"
+                    f" {cluster_uuid} {priv_ip}:5000 {IFACE} --ha-jm-count 3 --journal-partition=0"
                 ], check=True)
                 break
             except RuntimeError:
@@ -567,7 +588,7 @@ def main(data_chunks_per_stripe: int, parity_chunks_per_stripe: int):
     print("Prepping client...")
     wait_for_ssh(client_pub_ip)
     ssh_exec(client_pub_ip, [
-        "sudo dnf install nvme-cli fio python3-pip nano tmux -y",
+        "sudo dnf install nvme-cli fio python3-pip nano tmux rsync iotop -y",
         "sudo modprobe nvme-tcp",
         "echo 'nvme-tcp' | sudo tee /etc/modules-load.d/nvme-tcp.conf",
     ], check=True)
