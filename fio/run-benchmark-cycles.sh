@@ -501,7 +501,7 @@ cat > /tmp/disable_compression.json <<EOF
 }
 EOF
 docker cp /tmp/disable_compression.json \"\${container_name}:/root/disable_compression.json\"
-docker exec \"\${container_name}\" bash -lc \"/root/spdk/ultra/scripts/rpc_sock /root/disable_compression.json /mnt/ramdisk/\${container_name}/spdk.lock\"'"
+docker exec \"\${container_name}\" bash -lc \"python /root/spdk/ultra/scripts/rpc_sock.py /root/disable_compression.json /mnt/ramdisk/\${container_name}/spdk.sock\"'"
   done
 }
 
@@ -544,45 +544,79 @@ bring_up_storage_node() {
 
   local wait_timeout_sec="${SN_RESTART_WAIT_TIMEOUT_SEC:-600}"
   local wait_interval_sec="${SN_RESTART_WAIT_INTERVAL_SEC:-5}"
-  local deadline=$((SECONDS + wait_timeout_sec))
-  local node_is_online=0
 
-  log "Waiting for storage node ${storage_node_id} to report online"
-  while (( SECONDS < deadline )); do
-    local sn_list_json
-    sn_list_json="$(run_on_mgmt "sbctl sn list --json")"
-
-    if printf '%s\n' "${sn_list_json}" | "${PYTHON_BIN}" - "${storage_node_id}" <<'PY'
+  log "Waiting for storage node ${storage_node_id} to report online/rebalancing/in_restart"
+  run_on_mgmt "TARGET_NODE_ID='${storage_node_id}' WAIT_TIMEOUT_SEC='${wait_timeout_sec}' WAIT_INTERVAL_SEC='${wait_interval_sec}' python3 - <<'PY'
 import json
+import os
+import subprocess
 import sys
+import time
 
-target_id = sys.argv[1]
-nodes = json.load(sys.stdin)
-if not isinstance(nodes, list):
-    raise SystemExit(1)
+target_id = os.environ['TARGET_NODE_ID']
+timeout_sec = int(os.environ.get('WAIT_TIMEOUT_SEC', '600'))
+interval_sec = int(os.environ.get('WAIT_INTERVAL_SEC', '5'))
+deadline = time.time() + timeout_sec
+accepted_states = {'online', 'rebalancing', 'in_restart'}
 
-for node in nodes:
-    if not isinstance(node, dict):
+while time.time() < deadline:
+    proc = subprocess.run(
+        ['sbctl', 'sn', 'list', '--json'],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+
+    if proc.returncode != 0:
+        err = (proc.stderr or '').strip()
+        print(f'sbctl sn list failed (rc={proc.returncode}): {err}', file=sys.stderr)
+        time.sleep(interval_sec)
         continue
-    uuid = node.get("UUID") or node.get("uuid")
-    status = str(node.get("Status") or node.get("status") or "").strip().lower()
-    if uuid == target_id and status in ("online", "rebalancing"):
-        raise SystemExit(0)
 
-raise SystemExit(1)
-PY
-    then
-      node_is_online=1
-      break
-    fi
-    sleep "${wait_interval_sec}"
-  done
+    raw = (proc.stdout or '').strip()
+    if not raw:
+        print('sbctl sn list returned empty output; retrying...', file=sys.stderr)
+        time.sleep(interval_sec)
+        continue
 
-  if [[ "${node_is_online}" -ne 1 ]]; then
-    echo "storage node ${storage_node_id} did not become online within ${wait_timeout_sec}s" >&2
-    exit 1
-  fi
-  log "Storage node ${storage_node_id} is online"
+    try:
+        nodes = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f'failed to parse sbctl sn list JSON: {exc}; retrying...', file=sys.stderr)
+        time.sleep(interval_sec)
+        continue
+
+    if not isinstance(nodes, list):
+        print(f'unexpected sn list payload type: {type(nodes).__name__}; retrying...', file=sys.stderr)
+        time.sleep(interval_sec)
+        continue
+
+    target_node = None
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node_id = node.get('UUID') or node.get('uuid')
+        if node_id == target_id:
+            target_node = node
+            break
+
+    if target_node is None:
+        print(f'target node {target_id} not found in sn list yet; retrying...', file=sys.stderr)
+        time.sleep(interval_sec)
+        continue
+
+    status = str(target_node.get('Status') or target_node.get('status') or '').strip().lower()
+    print(f'target node {target_id} status={status}')
+    if status in accepted_states:
+        sys.exit(0)
+
+    time.sleep(interval_sec)
+
+print(f'storage node {target_id} did not reach {sorted(accepted_states)} within {timeout_sec}s', file=sys.stderr)
+sys.exit(1)
+PY"
+  log "Storage node ${storage_node_id} reached an accepted state"
 }
 
 # -----------------------------------------------------------------------------
@@ -707,7 +741,7 @@ run_for_current_cluster() {
   ec_profile="$(get_erasure_profile_from_metadata)"
 
   local compression
-  for compression in on off; do
+  for compression in off; do
     local run_name="ec-${ec_profile//+/p}-compression-${compression}"
     local run_dir="${RESULTS_BASE_DIR}/${timestamp}/${run_name}"
 

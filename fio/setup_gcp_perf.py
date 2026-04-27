@@ -380,6 +380,33 @@ def ssh_exec_stream(ip, cmd, check=False):
     return out, err
 
 
+def apply_network_optimizations(ip, role):
+    print(f"Applying network optimizations on {role} node {ip}...")
+    ssh_exec(ip, [
+        "sudo tee /etc/sysctl.d/99-simplyblock-network-tuning.conf >/dev/null <<'EOF'\n"
+        "# Increase TCP buffer sizes for high-bandwidth networks\n"
+        "net.core.rmem_max = 134217728\n"
+        "net.core.wmem_max = 134217728\n"
+        "net.core.rmem_default = 16777216\n"
+        "net.core.wmem_default = 16777216\n"
+        "net.ipv4.tcp_rmem = 4096 87380 134217728\n"
+        "net.ipv4.tcp_wmem = 4096 87380 134217728\n"
+        "\n"
+        "# Increase the network backlog for high PPS\n"
+        "net.core.netdev_max_backlog = 250000\n"
+        "\n"
+        "# Enable TCP window scaling\n"
+        "net.ipv4.tcp_window_scaling = 1\n"
+        "\n"
+        "# Enable BBR congestion control for better throughput\n"
+        "net.core.default_qdisc = fq\n"
+        "net.ipv4.tcp_congestion_control = bbr\n"
+        "EOF",
+        "sudo sysctl --system",
+        "sudo sysctl -n net.ipv4.tcp_congestion_control net.core.default_qdisc net.core.rmem_max net.core.wmem_max",
+    ], check=True)
+
+
 # ---------------------------------------------------------------------------
 # sbctl helpers
 # ---------------------------------------------------------------------------
@@ -509,6 +536,13 @@ def main(data_chunks_per_stripe: int, parity_chunks_per_stripe: int):
             f.result()
     print("Phase 1: DONE — sbcli installed on all nodes.")
 
+    print("Phase 1b: Applying network optimizations on storage nodes...")
+    with ThreadPoolExecutor(max_workers=SN_COUNT) as ex:
+        futures = [ex.submit(apply_network_optimizations, ip, "storage") for ip in sn_pub_ips]
+        for f in futures:
+            f.result()
+    print("Phase 1b: DONE — network tuning applied on all storage nodes.")
+
     # --- 6. Phase 2: Cluster setup ---
     # 6a. Create cluster on mgmt node
     # 3 nodes → ndcs=2 npcs=1 FTT=1 (need ndcs+npcs+1 ≤ SN_COUNT)
@@ -572,7 +606,7 @@ def main(data_chunks_per_stripe: int, parity_chunks_per_stripe: int):
             try:
                 ssh_exec(mgmt_pub_ip, [
                     f"sudo /usr/local/bin/sbctl -d sn add-node"
-                    f" {cluster_uuid} {priv_ip}:5000 {IFACE} --ha-jm-count 3 --journal-partition=0"
+                    f" {cluster_uuid} {priv_ip}:5000 {IFACE} --journal-partition=0"
                 ], check=True)
                 break
             except RuntimeError:
@@ -610,6 +644,7 @@ def main(data_chunks_per_stripe: int, parity_chunks_per_stripe: int):
     # Prep client node
     print("Prepping client...")
     wait_for_ssh(client_pub_ip)
+    apply_network_optimizations(client_pub_ip, "client")
     ssh_exec(client_pub_ip, [
         "sudo dnf install nvme-cli fio python3-pip nano tmux rsync iotop -y",
         "sudo modprobe nvme-tcp",
