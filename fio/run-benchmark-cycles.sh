@@ -477,12 +477,15 @@ if [[ -z \"\${container_name}\" ]]; then
   echo \"no spdk_80xx container found on ${storage_ip}\" >&2
   exit 1
 fi
-jm_vuid=\$(docker logs \"\${container_name}\" 2>&1 | grep -oE \"jm_vuid=[0-9]+\" | tail -n1 | cut -d= -f2 || true)
-if [[ -z \"\${jm_vuid}\" ]]; then
-  echo \"failed to resolve jm_vuid from docker logs for \${container_name} on ${storage_ip}\" >&2
+jm_vuids=\$(docker logs \"\${container_name}\" 2>&1 | grep -oP \"jm_vuid=([0-9]+)\" | tr \"=\" \" \" | awk \"{print \\\$2}\" | awk \"!seen[\\\$0]++\" || true)
+if [[ -z \"\${jm_vuids}\" ]]; then
+  echo \"failed to resolve jm_vuid entries from docker logs for \${container_name} on ${storage_ip}\" >&2
   exit 1
 fi
-cat > /tmp/disable_compression.json <<EOF
+while IFS= read -r jm_vuid; do
+  [[ -n \"\${jm_vuid}\" ]] || continue
+  echo \"Disabling compression for jm_vuid=\${jm_vuid} on ${storage_ip} (\${container_name})\"
+  cat > /tmp/disable_compression.json <<EOF
 {
   \"subsystems\": [
     {
@@ -500,8 +503,9 @@ cat > /tmp/disable_compression.json <<EOF
   ]
 }
 EOF
-docker cp /tmp/disable_compression.json \"\${container_name}:/root/disable_compression.json\"
-docker exec \"\${container_name}\" bash -lc \"python /root/spdk/ultra/scripts/rpc_sock.py /root/disable_compression.json /mnt/ramdisk/\${container_name}/spdk.sock\"'"
+  docker cp /tmp/disable_compression.json \"\${container_name}:/root/disable_compression.json\"
+  docker exec \"\${container_name}\" bash -lc \"python /root/spdk/ultra/scripts/rpc_sock.py /root/disable_compression.json /mnt/ramdisk/\${container_name}/spdk.sock\"
+done <<< \"\${jm_vuids}\"'"
   done
 }
 
